@@ -1,0 +1,8 @@
+name: "Scenario A - Gradual Deterioration"
+description: "10-day gradual resting HR drift, shortened sleep, rising fatigue, and declining exercise completion."
+days: 10
+target_astronaut: "A01"
+effects:
+  heart_rate_resting_drift_per_day: 1.8
+  sleep_duration_drift_per_day: -0.25
+  exercise_completion_drift_per_day: -4.0

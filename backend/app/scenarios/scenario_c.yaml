@@ -1,0 +1,8 @@
+name: "Scenario C - Cabin CO2 Hazard & Comms Outage"
+description: "CO2 exceedance while Earth communication link is down, followed by reconnection."
+days: 3
+target_astronaut: "A01"
+effects:
+  co2_spike_day: 2
+  co2_value: 6.2
+  comms_offline_during_spike: true

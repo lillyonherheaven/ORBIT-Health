@@ -1,0 +1,34 @@
+source_id: orbit_normalized_staging_v1
+path: data/normalized_observations.csv
+format: csv
+encoding: utf-8
+delimiter: ","
+timezone: UTC
+columns:
+  observation_id: observation_id
+  astronaut_id: astronaut_id
+  metric: metric
+  value: value
+  unit: unit
+  source: source
+  measured_at: measured_at
+  received_at: received_at
+  quality: quality
+  kind: kind
+  context_json: context_json
+metric_map:
+  heart_rate_resting: {unit: bpm, kind: measured}
+  sleep_duration: {unit: h, kind: estimated}
+  fatigue_self_report: {unit: ordinal_1_5, kind: self_report}
+  exercise_performance_index: {unit: percent_of_personal_baseline, kind: estimated}
+  exercise_completion: {unit: "%", kind: measured}
+  glucose: {unit: mg/dL, kind: measured}
+  radiation_dose_rate: {unit: source_unit_required, kind: measured}
+  visual_change: {unit: report_code, kind: self_report}
+  sustained_attention_task: {unit: task_score, kind: measured}
+  co2: {unit: mmHg, kind: measured}
+quality_values: [good, suspect, invalid, missing]
+required_fields: [observation_id, astronaut_id, metric, value, unit, source, measured_at, received_at, quality, kind]
+unknown_column_policy: reject_with_audit_record
+unknown_unit_policy: quarantine_and_set_domain_gray
+semantic_mismatch_policy: reject; never_coerce_assay_to_observation

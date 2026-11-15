@@ -1,0 +1,7 @@
+name: "Scenario B - Radiation Event"
+description: "Declared solar particle event with rapidly rising radiation dose rate."
+days: 3
+target_astronaut: "A01"
+effects:
+  radiation_spike_day: 2
+  radiation_dose_value: 4.8

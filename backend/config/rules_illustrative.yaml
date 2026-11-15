@@ -1,0 +1,19 @@
+rules:
+  - id: "R-RAD-CRIT-01 (ILLUSTRATIVE)"
+    domain: "radiation"
+    metric: "radiation_dose"
+    threshold: 2.0
+    state: "RED"
+    playbook_id: "PB-RAD-SHELTER"
+  - id: "R-ENV-CO2-01 (ILLUSTRATIVE)"
+    domain: "environment"
+    metric: "co2"
+    threshold: 4.5
+    state: "RED"
+    playbook_id: "PB-ENV-CO2"
+  - id: "R-CV-SLEEP-COMBO-01 (ILLUSTRATIVE)"
+    domain: "cardiovascular_sleep_combined"
+    persistence_required: 3
+    window: 4
+    state: "ORANGE"
+    playbook_id: "PB-CV-ASSESS"

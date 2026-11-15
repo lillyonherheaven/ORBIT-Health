@@ -1,0 +1,1125 @@
+from pathlib import Path
+
+files = {
+    # 1. تحديث الباك إند ليدعم التبديل الحي بين Subject_1, Subject_2, Subject_3 بكل اختبارات Ares
+    "backend/app/sources/ares_adapter.py": """from typing import Iterator, Dict, Any
+from app.contracts.observation import Observation
+from app.sources.base import SourceInfo
+
+ARES_SUBJECT_DATA: Dict[str, Dict[str, Any]] = {
+    "Subject_1": {
+        "crew_name": "CDR MALAK (A01)",
+        "astronaut_id": "A01",
+        "srt_ms": 258.4,
+        "running_memory_pct": 93.2,
+        "matching_to_sample_pct": 94.8,
+        "mrtc_score": 91.5,
+        "composite_score": 92.8,
+        "hr_base": 62.0,
+        "ex_base": 98.0,
+        "slp_base": 7.2
+    },
+    "Subject_2": {
+        "crew_name": "PLT OMAR (A02)",
+        "astronaut_id": "A02",
+        "srt_ms": 276.1,
+        "running_memory_pct": 88.6,
+        "matching_to_sample_pct": 90.1,
+        "mrtc_score": 87.9,
+        "composite_score": 89.5,
+        "hr_base": 58.0,
+        "ex_base": 99.0,
+        "slp_base": 7.5
+    },
+    "Subject_3": {
+        "crew_name": "MS1 SARA (A03)",
+        "astronaut_id": "A03",
+        "srt_ms": 249.2,
+        "running_memory_pct": 95.1,
+        "matching_to_sample_pct": 96.0,
+        "mrtc_score": 93.8,
+        "composite_score": 94.6,
+        "hr_base": 66.0,
+        "ex_base": 95.5,
+        "slp_base": 6.9
+    }
+}
+
+class AresCampaignAdapter:
+    def __init__(self, subject_id: str = "Subject_1", days: int = 10, radiation_lag: bool = False):
+        self.subject_id = subject_id if subject_id in ARES_SUBJECT_DATA else "Subject_1"
+        self.days = days
+        self.radiation_lag = radiation_lag
+
+    def describe(self) -> SourceInfo:
+        return SourceInfo(
+            name=f"BRSMPT_Campaign_1_Ares_{self.subject_id}",
+            metrics=["sustained_attention_task"],
+            units={"sustained_attention_task": "task_score"},
+            cadence="daily_battery"
+        )
+
+    def stream(self) -> Iterator[Observation]:
+        prof = ARES_SUBJECT_DATA[self.subject_id]
+        base_score = prof["composite_score"]
+        for d in range(1, self.days + 1):
+            score = base_score - (d * 0.15)
+            if self.radiation_lag and d >= 4:
+                score = base_score - 14.5
+            yield Observation(
+                id=f"ares_{self.subject_id}_d{d:02d}",
+                astronaut_id=prof["astronaut_id"],
+                metric="sustained_attention_task",
+                value=round(score, 2),
+                unit="task_score",
+                source=f"BRSMPT_Campaign_1_Ares/{self.subject_id}",
+                measured_at=f"2026-03-{d:02d}T08:00:00Z",
+                received_at=f"2026-03-{d:02d}T08:00:00Z",
+                quality="good",
+                kind="measured",
+                context={"mission_day": d, "ares_subject": self.subject_id, "label": "ILLUSTRATIVE DEMO VALUE"}
+            )
+""",
+    "backend/app/api/routes.py": """import json
+from pathlib import Path
+from fastapi import APIRouter
+from typing import Dict, Any
+from app.sources.synthetic import SyntheticSource, SCENARIO_SEEDS
+from app.sources.ares_adapter import ARES_SUBJECT_DATA
+from app.store.db import OnboardStore
+from app.baseline.baseline_service import PersonalBaselineService
+from app.risk.engine import RiskEngine
+from app.guidance.alert_manager import AlertManager
+from app.sync.sync_manager import SyncManager
+from app.contracts.checkin import DailyCheckin
+
+router = APIRouter()
+
+store = OnboardStore()
+baseline_svc = PersonalBaselineService(store=store)
+engine = RiskEngine(baseline_svc)
+alerts = AlertManager()
+sync_mgr = SyncManager(online=True)
+
+OSDR_PATH = Path(__file__).resolve().parents[2] / "config" / "osdr_studies.json"
+OSDR_CATALOG = json.loads(OSDR_PATH.read_text(encoding="utf-8"))
+
+CURRENT_STATE = {
+    "scenario": "normal",
+    "seed": 42,
+    "ares_subject": "Subject_1",
+    "astronaut_id": "A01",
+    "faults": {},
+    "checkins": []
+}
+
+def _run_current_simulation():
+    astro_id = CURRENT_STATE["astronaut_id"]
+    src = SyntheticSource(
+        seed=CURRENT_STATE["seed"],
+        scenario=CURRENT_STATE["scenario"],
+        days=10,
+        astronaut_id=astro_id,
+        faults=CURRENT_STATE["faults"]
+    )
+    obs_list = list(src.stream())
+    evt = engine.evaluate(obs_list, astronaut_id=astro_id)
+    alerts.register_event(evt)
+    synced_evt = sync_mgr.enqueue(evt)
+    alerts.register_event(synced_evt)
+    return obs_list, synced_evt
+
+@router.get("/state")
+def get_system_state():
+    obs_list, evt = _run_current_simulation()
+    pb = alerts.get_playbook(evt.playbook.id)
+    subj = CURRENT_STATE["ares_subject"]
+    return {
+        "online": sync_mgr.online,
+        "outbox_count": len(sync_mgr.outbox),
+        "delivered_count": len(sync_mgr.delivered_records),
+        "scenario": CURRENT_STATE["scenario"],
+        "seed": CURRENT_STATE["seed"],
+        "ares_subject": subj,
+        "astronaut_id": CURRENT_STATE["astronaut_id"],
+        "ares_profile": ARES_SUBJECT_DATA[subj],
+        "ares_profiles": ARES_SUBJECT_DATA,
+        "osdr_catalog": OSDR_CATALOG,
+        "active_event": evt,
+        "playbook": pb,
+        "observations": obs_list[-90:],
+        "playbooks_all": list(alerts.playbooks.values()),
+        "checkins": CURRENT_STATE["checkins"]
+    }
+
+@router.post("/subject/{subject_id}")
+def switch_ares_subject(subject_id: str):
+    if subject_id in ARES_SUBJECT_DATA:
+        CURRENT_STATE["ares_subject"] = subject_id
+        CURRENT_STATE["astronaut_id"] = ARES_SUBJECT_DATA[subject_id]["astronaut_id"]
+    return get_system_state()
+
+@router.post("/scenario/{scenario_name}")
+def inject_scenario(scenario_name: str, missing_sensor: str = "", noisy: bool = False, unmapped_unit: bool = False):
+    CURRENT_STATE["scenario"] = scenario_name
+    CURRENT_STATE["seed"] = SCENARIO_SEEDS.get(scenario_name, 42)
+    faults: Dict[str, Any] = {}
+    if missing_sensor:
+        faults["missing_metric"] = missing_sensor
+        faults["missing_day"] = 10
+    if noisy:
+        faults["noisy_day"] = 10
+        faults["noisy_metric"] = "heart_rate_resting"
+    if unmapped_unit:
+        faults["unmapped_unit_metric"] = "radiation_dose"
+        faults["unmapped_day"] = 10
+    CURRENT_STATE["faults"] = faults
+    if scenario_name == "scenario_c":
+        sync_mgr.set_connectivity(False)
+    return get_system_state()
+
+@router.post("/comms/{mode}")
+def toggle_comms(mode: str):
+    sync_mgr.set_connectivity(mode.lower() == "online")
+    return {
+        "online": sync_mgr.online,
+        "outbox_count": len(sync_mgr.outbox),
+        "delivered_count": len(sync_mgr.delivered_records)
+    }
+""",
+
+    # 2. تحديث الواجهة ببطارية اختبارات BRSMPT Ares الحية وتصحيح تداخل أرقام الشارت
+    "frontend/index.html": """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ORBIT HEALTH // Autonomous Spaceflight Medical OS</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: #030712;
+      background-image:
+        radial-gradient(at 15% 10%, rgba(14, 165, 233, 0.13) 0px, transparent 45%),
+        radial-gradient(at 85% 5%, rgba(99, 102, 241, 0.11) 0px, transparent 45%),
+        radial-gradient(at 50% 90%, rgba(16, 185, 129, 0.08) 0px, transparent 50%),
+        linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+      background-size: 100% 100%, 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+      color: #f8fafc;
+      font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 13.5px;
+      min-height: 100vh;
+      padding-bottom: 130px;
+    }
+
+    @keyframes laserSweep {
+      0% { transform: translateY(38px); opacity: 0.25; }
+      50% { opacity: 0.9; }
+      100% { transform: translateY(350px); opacity: 0.25; }
+    }
+    @keyframes radarSpin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .laser-line { animation: laserSweep 4s ease-in-out infinite alternate; }
+    .radar-ring { transform-origin: 140px 200px; animation: radarSpin 28s linear infinite; }
+
+    /* TOP LUXURY NAVIGATION BAR */
+    .navbar {
+      background: rgba(9, 14, 28, 0.86);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+      padding: 12px 28px;
+      overflow: hidden;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-left { float: left; }
+    .logo-badge {
+      display: inline-block;
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+      text-align: center;
+      line-height: 34px;
+      font-weight: 900;
+      font-size: 1rem;
+      color: #fff;
+      box-shadow: 0 0 18px rgba(14, 165, 233, 0.45);
+      vertical-align: middle;
+      margin-right: 12px;
+    }
+    .brand-text { display: inline-block; vertical-align: middle; }
+    .brand-main {
+      font-size: 1.15rem;
+      font-weight: 800;
+      letter-spacing: 1.2px;
+      background: linear-gradient(90deg, #ffffff 0%, #93c5fd 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .brand-tag {
+      font-size: 0.68rem;
+      color: #64748b;
+      letter-spacing: 1.3px;
+      text-transform: uppercase;
+      display: block;
+    }
+
+    .nav-center { float: left; margin-left: 32px; padding-top: 3px; }
+    .crew-tab {
+      display: inline-block;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 8px;
+      padding: 6px 14px;
+      margin-right: 8px;
+      color: #94a3b8;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .crew-tab:hover { border-color: #38bdf8; color: #f8fafc; }
+    .crew-tab.active {
+      background: linear-gradient(135deg, rgba(14, 165, 233, 0.24) 0%, rgba(37, 99, 235, 0.24) 100%);
+      border-color: #38bdf8;
+      color: #fff;
+      box-shadow: 0 0 15px rgba(56, 189, 248, 0.25);
+    }
+
+    .nav-right { float: right; padding-top: 4px; }
+    .status-chip {
+      display: inline-block;
+      padding: 6px 13px;
+      border-radius: 99px;
+      font-size: 0.73rem;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      margin-left: 8px;
+      text-transform: uppercase;
+    }
+    .chip-met { background: rgba(15, 23, 42, 0.9); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.2); font-family: 'Consolas', monospace; }
+    .chip-online { background: rgba(16, 185, 129, 0.14); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.45); }
+    .chip-offline { background: rgba(239, 68, 68, 0.18); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.55); }
+    .chip-outbox { background: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+
+    /* TELEMETRY KPI RIBBON */
+    .kpi-ribbon { padding: 18px 28px 6px 28px; overflow: hidden; }
+    .kpi-box {
+      float: left;
+      width: 15.66%;
+      margin-right: 1.2%;
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.85) 0%, rgba(9, 13, 24, 0.92) 100%);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-radius: 12px;
+      padding: 13px 15px;
+      cursor: pointer;
+      transition: all 0.22s ease;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    .kpi-box:last-child { margin-right: 0; }
+    .kpi-box:hover { transform: translateY(-3px); border-color: rgba(56, 189, 248, 0.55); }
+    .kpi-box.selected {
+      border-color: #38bdf8;
+      background: linear-gradient(180deg, rgba(14, 165, 233, 0.18) 0%, rgba(9, 13, 24, 0.95) 100%);
+    }
+    .kpi-top { overflow: hidden; margin-bottom: 6px; }
+    .kpi-label { float: left; font-size: 0.68rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.8px; }
+    .kpi-osdr { float: right; font-size: 0.65rem; font-family: monospace; color: #38bdf8; background: rgba(56, 189, 248, 0.12); padding: 1px 6px; border-radius: 4px; }
+    .kpi-number { font-size: 1.55rem; font-weight: 800; color: #ffffff; font-family: 'Consolas', monospace; }
+    .kpi-unit { font-size: 0.75rem; color: #64748b; font-weight: 500; margin-left: 3px; }
+    .kpi-sub { font-size: 0.7rem; color: #64748b; margin-top: 4px; }
+    .kpi-sub span { color: #34d399; font-weight: 600; }
+
+    /* MAIN GRID */
+    .console-grid { padding: 12px 28px 24px 28px; overflow: hidden; }
+    .col-scanner { float: left; width: 29%; padding-right: 18px; }
+    .col-engine { float: left; width: 44%; padding-right: 18px; }
+    .col-intel { float: left; width: 27%; }
+
+    .glass-card {
+      background: linear-gradient(165deg, rgba(15, 23, 42, 0.86) 0%, rgba(8, 12, 22, 0.94) 100%);
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 18px;
+      box-shadow: 0 15px 35px -5px rgba(0, 0, 0, 0.6);
+    }
+    .card-title-bar {
+      overflow: hidden;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+      padding-bottom: 10px;
+      margin-bottom: 14px;
+    }
+    .card-title { float: left; font-size: 0.78rem; font-weight: 800; letter-spacing: 1.1px; text-transform: uppercase; color: #cbd5e1; }
+    .card-tag {
+      float: right;
+      font-size: 0.68rem;
+      color: #38bdf8;
+      font-family: monospace;
+      background: rgba(14, 165, 233, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    /* HOLOGRAPHIC ANATOMICAL SCANNER */
+    .holo-stage {
+      background: radial-gradient(circle at 50% 48%, rgba(14, 165, 233, 0.16) 0%, rgba(6, 11, 25, 0.95) 72%);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 12px;
+      padding: 10px;
+      text-align: center;
+      box-shadow: inset 0 0 35px rgba(14, 165, 233, 0.12);
+    }
+    .organ-node { cursor: pointer; transition: all 0.25s ease; }
+    .organ-node:hover { filter: drop-shadow(0 0 10px #38bdf8); opacity: 1 !important; }
+
+    /* CLINICAL DECISION ENGINE BANNER */
+    .engine-hero {
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      box-shadow: 0 18px 40px -10px rgba(0, 0, 0, 0.7);
+      transition: all 0.3s ease;
+    }
+    .hero-GREEN { background: linear-gradient(135deg, rgba(6, 78, 59, 0.45) 0%, rgba(9, 14, 28, 0.95) 85%); border-color: rgba(16, 185, 129, 0.5); }
+    .hero-AMBER { background: linear-gradient(135deg, rgba(120, 53, 15, 0.5) 0%, rgba(9, 14, 28, 0.95) 85%); border-color: rgba(245, 158, 11, 0.6); }
+    .hero-ORANGE { background: linear-gradient(135deg, rgba(154, 52, 18, 0.55) 0%, rgba(9, 14, 28, 0.95) 85%); border-color: rgba(249, 115, 22, 0.75); }
+    .hero-RED { background: linear-gradient(135deg, rgba(153, 27, 27, 0.65) 0%, rgba(9, 14, 28, 0.95) 85%); border-color: rgba(239, 68, 68, 0.85); }
+    .hero-GRAY { background: linear-gradient(135deg, rgba(51, 65, 85, 0.55) 0%, rgba(9, 14, 28, 0.95) 85%); border-color: rgba(148, 163, 184, 0.6); }
+
+    .state-pill-large {
+      display: inline-block;
+      padding: 5px 14px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 900;
+      letter-spacing: 1.2px;
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      margin-bottom: 14px;
+    }
+
+    .explain-block {
+      background: rgba(6, 10, 20, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      border-left: 3px solid #38bdf8;
+      border-radius: 8px;
+      padding: 11px 14px;
+      margin-bottom: 10px;
+    }
+    .explain-label { font-size: 0.68rem; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: #38bdf8; margin-bottom: 3px; }
+    .explain-val { font-size: 0.86rem; color: #f1f5f9; line-height: 1.48; }
+
+    .protocol-drawer {
+      background: rgba(3, 7, 18, 0.8);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-top: 12px;
+      font-size: 0.8rem;
+    }
+
+    .badge-mini {
+      display: inline-block;
+      background: rgba(14, 165, 233, 0.14);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #7dd3fc;
+      padding: 3px 9px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 0.72rem;
+      margin-right: 6px;
+      margin-top: 6px;
+    }
+
+    .metric-pill {
+      display: inline-block;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      color: #94a3b8;
+      padding: 5px 11px;
+      border-radius: 6px;
+      font-size: 0.73rem;
+      font-weight: 600;
+      margin-right: 6px;
+      margin-bottom: 8px;
+      cursor: pointer;
+    }
+    .metric-pill:hover, .metric-pill.active {
+      background: rgba(14, 165, 233, 0.2);
+      border-color: #38bdf8;
+      color: #fff;
+    }
+
+    /* ARES COGNITIVE SUB-TEST BARS */
+    .ares-grid { overflow: hidden; margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(148, 163, 184, 0.12); }
+    .ares-cell {
+      float: left;
+      width: 23.5%;
+      margin-right: 2%;
+      background: rgba(9, 14, 26, 0.85);
+      border: 1px solid rgba(56, 189, 248, 0.18);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .ares-cell:last-child { margin-right: 0; }
+    .ares-name { font-size: 0.65rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; }
+    .ares-val { font-size: 1.05rem; font-weight: 800; color: #38bdf8; font-family: monospace; margin-top: 2px; }
+    .ares-bar-bg { width: 100%; height: 4px; background: #1e293b; border-radius: 2px; margin-top: 5px; overflow: hidden; }
+    .ares-bar-fill { height: 4px; background: linear-gradient(90deg, #0ea5e9, #34d399); }
+
+    .osdr-card {
+      background: rgba(9, 14, 26, 0.75);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-left: 3px solid #0ea5e9;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 9px;
+    }
+    .osdr-head { font-weight: 800; font-size: 0.78rem; color: #38bdf8; font-family: monospace; }
+    .osdr-body { font-size: 0.76rem; color: #cbd5e1; margin-top: 2px; line-height: 1.38; }
+
+    .streak-banner {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.16) 0%, rgba(14, 165, 233, 0.12) 100%);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+    .streak-circle {
+      float: left;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 3px solid #10b981;
+      text-align: center;
+      line-height: 42px;
+      font-weight: 900;
+      font-size: 1.1rem;
+      color: #34d399;
+      margin-right: 12px;
+    }
+
+    .select-lux {
+      width: 100%;
+      padding: 9px 12px;
+      background: rgba(6, 10, 20, 0.9);
+      color: #f8fafc;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 8px;
+      font-size: 0.82rem;
+      margin-top: 4px;
+      margin-bottom: 10px;
+    }
+    .btn-lux {
+      width: 100%;
+      background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 11px;
+      font-weight: 800;
+      font-size: 0.8rem;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    /* FLOATING GLASS JUDGE COMMAND DOCK AT BOTTOM */
+    .judge-dock {
+      position: fixed;
+      bottom: 12px;
+      left: 28px;
+      right: 28px;
+      background: rgba(9, 14, 28, 0.92);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(99, 102, 241, 0.5);
+      border-radius: 14px;
+      padding: 10px 18px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9);
+      z-index: 200;
+      overflow: hidden;
+    }
+    .dock-title {
+      float: left;
+      font-size: 0.72rem;
+      font-weight: 900;
+      color: #a5b4fc;
+      letter-spacing: 1.2px;
+      padding-top: 8px;
+      margin-right: 14px;
+      text-transform: uppercase;
+    }
+    .dock-btn {
+      background: rgba(30, 41, 59, 0.88);
+      color: #e2e8f0;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 8px;
+      padding: 7px 12px;
+      margin-right: 6px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .dock-btn:hover { color: #fff; border-color: #38bdf8; }
+    .dock-nom { border-bottom: 3px solid #10b981; }
+    .dock-ora { border-bottom: 3px solid #f97316; }
+    .dock-red { border-bottom: 3px solid #ef4444; }
+    .dock-gry { border-bottom: 3px solid #94a3b8; }
+  </style>
+</head>
+<body>
+
+  <!-- TOP LUXURY HEADER -->
+  <div class="navbar">
+    <div class="nav-left">
+      <div class="logo-badge">◈</div>
+      <div class="brand-text">
+        <span class="brand-main">ORBIT HEALTH OS</span>
+        <span class="brand-tag">NASA Autonomous Medical Decision Support // v3.0 OSDR & Ares Grounded</span>
+      </div>
+    </div>
+
+    <div class="nav-center">
+      <span class="crew-tab active" id="tab-Subject_1" onclick="switchSubject('Subject_1')">👩‍🚀 CDR MALAK (Ares Subj_1)</span>
+      <span class="crew-tab" id="tab-Subject_2" onclick="switchSubject('Subject_2')">👨‍🚀 PLT OMAR (Ares Subj_2)</span>
+      <span class="crew-tab" id="tab-Subject_3" onclick="switchSubject('Subject_3')">👩‍🚀 MS1 SARA (Ares Subj_3)</span>
+    </div>
+
+    <div class="nav-right">
+      <span class="status-chip chip-met" id="live-clock">MET 086:14:24:39</span>
+      <span class="status-chip chip-online" id="link-chip">● EARTH LINK: SYNCHRONIZED</span>
+      <span class="status-chip chip-outbox" id="outbox-chip">OUTBOX: 0 | DELIVERED: 1</span>
+    </div>
+  </div>
+
+  <!-- 6 KPI BIOMETRIC CARDS -->
+  <div class="kpi-ribbon">
+    <div class="kpi-box" id="card-heart_rate_resting" onclick="changeMetric('heart_rate_resting')">
+      <div class="kpi-top"><span class="kpi-label">Resting Heart Rate</span><span class="kpi-osdr">CV-BASE</span></div>
+      <div class="kpi-number"><span id="v-hr">61.9</span><span class="kpi-unit">bpm</span></div>
+      <div class="kpi-sub">Personal Baseline: <span id="b-hr">62.0 bpm</span></div>
+    </div>
+
+    <div class="kpi-box selected" id="card-exercise_performance_index" onclick="changeMetric('exercise_performance_index')">
+      <div class="kpi-top"><span class="kpi-label">Muscle Index</span><span class="kpi-osdr">OSD-684</span></div>
+      <div class="kpi-number"><span id="v-ex">97.9</span><span class="kpi-unit">%</span></div>
+      <div class="kpi-sub">Myobundle Context: <span id="b-ex">98.0 %</span></div>
+    </div>
+
+    <div class="kpi-box" id="card-sustained_attention_task" onclick="changeMetric('sustained_attention_task')">
+      <div class="kpi-top"><span class="kpi-label">Ares Vigilance</span><span class="kpi-osdr">OSD-939</span></div>
+      <div class="kpi-number"><span id="v-att">92.8</span><span class="kpi-unit">pts</span></div>
+      <div class="kpi-sub">BRSMPT Battery: <span id="b-att">Subj_1 (92.8)</span></div>
+    </div>
+
+    <div class="kpi-box" id="card-sleep_duration" onclick="changeMetric('sleep_duration')">
+      <div class="kpi-top"><span class="kpi-label">Circadian Sleep</span><span class="kpi-osdr">OSD-939</span></div>
+      <div class="kpi-number"><span id="v-slp">7.2</span><span class="kpi-unit">hrs</span></div>
+      <div class="kpi-sub">Personal Baseline: <span id="b-slp">7.2 hrs</span></div>
+    </div>
+
+    <div class="kpi-box" id="card-radiation_dose" onclick="changeMetric('radiation_dose')">
+      <div class="kpi-top"><span class="kpi-label">Dosimeter Rate</span><span class="kpi-osdr">OSD-1010</span></div>
+      <div class="kpi-number"><span id="v-rad">0.45</span><span class="kpi-unit">mSv/d</span></div>
+      <div class="kpi-sub">Shield Nominal: <span>&lt; 2.0 mSv/d</span></div>
+    </div>
+
+    <div class="kpi-box" id="card-co2" onclick="changeMetric('co2')">
+      <div class="kpi-top"><span class="kpi-label">Cabin ppCO2</span><span class="kpi-osdr">OSD-816</span></div>
+      <div class="kpi-number"><span id="v-co2">2.80</span><span class="kpi-unit">mmHg</span></div>
+      <div class="kpi-sub">Habitat Limit: <span>&lt; 4.5 mmHg</span></div>
+    </div>
+  </div>
+
+  <!-- MAIN 3-COLUMN SPACECRAFT WORKSPACE -->
+  <div class="console-grid">
+
+    <!-- COLUMN 1: HOLOGRAPHIC BIOMETRIC BODY MAP -->
+    <div class="col-scanner">
+      <div class="glass-card">
+        <div class="card-title-bar">
+          <span class="card-title">Biometric Hologram & Subsystem Localization</span>
+          <span class="card-tag">SECTION 12.5 SVG</span>
+        </div>
+
+        <div class="holo-stage">
+          <svg width="100%" height="385" viewBox="0 0 280 400">
+            <defs>
+              <linearGradient id="bodyHolo" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.28" />
+                <stop offset="50%" stop-color="#0ea5e9" stop-opacity="0.12" />
+                <stop offset="100%" stop-color="#10b981" stop-opacity="0.24" />
+              </linearGradient>
+              <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="3.5" result="blur" />
+                <feComposite in="SourceGraphic" in2="blur" operator="over" />
+              </filter>
+            </defs>
+
+            <g class="radar-ring">
+              <circle cx="140" cy="200" r="155" fill="none" stroke="rgba(56, 189, 248, 0.16)" stroke-width="1.2" stroke-dasharray="10, 8, 2, 8" />
+              <circle cx="140" cy="200" r="122" fill="none" stroke="rgba(56, 189, 248, 0.12)" stroke-width="1" stroke-dasharray="4, 6" />
+            </g>
+
+            <polygon id="holo-cabin" points="22,14 258,14 272,34 272,366 258,386 22,386 8,366 8,34"
+              fill="none" stroke="#10b981" stroke-width="2" stroke-dasharray="12,5"
+              class="organ-node" onclick="selectRegion('cabin', 'radiation_dose')" />
+            <text x="140" y="28" fill="#7dd3fc" font-size="8.5" font-family="monospace" letter-spacing="1.2" text-anchor="middle">
+              [ HABITAT SHELL & RADIATION OVERLAY // CLICK ]
+            </text>
+
+            <path d="M140,42 C154,42 164,53 164,68 C164,80 157,90 148,94 L150,102 L182,108 C193,110 200,118 202,130 L208,198 C209,205 203,210 197,210 C191,210 187,205 186,198 L180,140 L172,140 L170,212 L176,342 C176,350 170,356 162,356 C154,356 149,350 148,342 L143,242 L137,242 L132,342 C131,350 126,356 118,356 C110,356 104,350 104,342 L110,212 L108,140 L100,140 L94,198 C93,205 89,210 83,210 C77,210 71,205 72,198 L78,130 C80,118 87,110 98,108 L130,102 L132,94 C123,90 116,80 116,68 C116,53 126,42 140,42 Z"
+              fill="url(#bodyHolo)" stroke="#38bdf8" stroke-width="1.6" />
+
+            <line x1="140" y1="88" x2="140" y2="215" stroke="rgba(56, 189, 248, 0.35)" stroke-width="2" stroke-dasharray="3,3" />
+
+            <g class="organ-node" onclick="selectRegion('head', 'sustained_attention_task')">
+              <ellipse id="holo-head" cx="140" cy="64" rx="18" ry="15" fill="#10b981" fill-opacity="0.55" stroke="#34d399" stroke-width="1.8" filter="url(#neonGlow)" />
+              <circle cx="133" cy="66" r="2.8" fill="#fff" />
+              <circle cx="147" cy="66" r="2.8" fill="#fff" />
+              <line x1="162" y1="64" x2="215" y2="52" stroke="#38bdf8" stroke-width="1" />
+              <text x="218" y="55" fill="#bae6fd" font-size="8.5" font-family="monospace">NEURO/SANS</text>
+            </g>
+
+            <g class="organ-node" onclick="selectRegion('chest', 'heart_rate_resting')">
+              <path id="holo-chest" d="M116,112 C126,110 135,116 137,128 L137,154 C124,154 114,145 114,132 Z M164,112 C154,110 145,116 143,128 L143,154 C156,154 166,145 166,132 Z"
+                fill="#10b981" fill-opacity="0.55" stroke="#34d399" stroke-width="1.8" filter="url(#neonGlow)" />
+              <circle cx="146" cy="134" r="6" fill="#f43f5e" />
+              <line x1="112" y1="132" x2="62" y2="122" stroke="#38bdf8" stroke-width="1" />
+              <text x="18" y="125" fill="#bae6fd" font-size="8.5" font-family="monospace">CARDIO/HRV</text>
+            </g>
+
+            <g class="organ-node" onclick="selectRegion('abdomen', 'glucose')">
+              <path id="holo-abdomen" d="M118,164 L162,164 C165,178 162,196 154,206 L126,206 C118,196 115,178 118,164 Z"
+                fill="#10b981" fill-opacity="0.55" stroke="#34d399" stroke-width="1.8" filter="url(#neonGlow)" />
+              <line x1="164" y1="185" x2="212" y2="185" stroke="#38bdf8" stroke-width="1" />
+              <text x="215" y="188" fill="#bae6fd" font-size="8.5" font-family="monospace">GI/OSD-1010</text>
+            </g>
+
+            <g class="organ-node" onclick="selectRegion('limbs', 'exercise_performance_index')">
+              <path id="holo-limbs" d="M81,126 L95,126 L91,188 L77,188 Z M185,126 L199,126 L203,188 L189,188 Z M112,222 L131,222 L127,328 L109,328 Z M149,222 L168,222 L171,328 L153,328 Z"
+                fill="#10b981" fill-opacity="0.55" stroke="#34d399" stroke-width="1.8" filter="url(#neonGlow)" />
+              <line x1="172" y1="275" x2="212" y2="275" stroke="#38bdf8" stroke-width="1" />
+              <text x="215" y="278" fill="#bae6fd" font-size="8.5" font-family="monospace">MSK/OSD-684</text>
+            </g>
+
+            <g class="laser-line">
+              <line x1="28" y1="0" x2="252" y2="0" stroke="#38bdf8" stroke-width="2" />
+              <rect x="28" y="-12" width="224" height="12" fill="url(#bodyHolo)" opacity="0.35" />
+            </g>
+          </svg>
+        </div>
+
+        <div class="protocol-drawer" id="subsystem-card">
+          <div style="color:#38bdf8;font-weight:800;font-size:0.82rem;margin-bottom:4px;" id="sub-title">
+            ACTIVE SUBSYSTEM: SKELETAL MUSCLE & MYOBUNDLE (OSD-684)
+          </div>
+          <div style="color:#cbd5e1;font-size:0.78rem;" id="sub-desc">
+            Grounding: Human skeletal muscle tissue-chip RNA-seq. Routes to <code>PB-MSK</code> & <code>PB-MET</code>.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- COLUMN 2: EXPLAINABLE RISK ENGINE & BASELINE TELEMETRY CHART -->
+    <div class="col-engine">
+      <div id="hero-banner" class="engine-hero hero-GREEN">
+        <div style="overflow:hidden;">
+          <span class="state-pill-large" id="hero-state">● RISK STATE: GREEN // NOMINAL</span>
+          <span style="float:right;font-family:monospace;font-size:0.74rem;color:#cbd5e1;padding-top:6px;" id="hero-sync">
+            TX: SENT | DELIVERY: DELIVERED | ACK: NONE
+          </span>
+        </div>
+
+        <div class="explain-block" style="border-left-color:#10b981;">
+          <div class="explain-label">1. Required Crew Action & Approved Playbook</div>
+          <div class="explain-val" id="exp-next">Loading...</div>
+        </div>
+
+        <div class="explain-block" style="border-left-color:#38bdf8;">
+          <div class="explain-label">2. What Changed (Personal Baseline & Rule Evidence)</div>
+          <div class="explain-val" id="exp-what">Loading...</div>
+        </div>
+
+        <div class="explain-block" style="border-left-color:#a855f7;">
+          <div class="explain-label">3. Why It Matters (NASA OSDR Mechanism & Evidence Limits)</div>
+          <div class="explain-val" id="exp-why">Loading...</div>
+        </div>
+
+        <div class="protocol-drawer">
+          <div style="margin-bottom:4px;">
+            <strong style="color:#38bdf8;">Active Playbook Protocol:</strong>
+            <span id="pb-head" style="font-weight:700;color:#fff;">PB-MSK v1</span> —
+            <span id="pb-act">...</span>
+          </div>
+          <div style="font-size:0.75rem;color:#94a3b8;">
+            <strong>Escalation Condition:</strong> <span id="pb-esc">...</span> |
+            <strong>Authority:</strong> <span id="pb-auth" style="color:#fbbf24;">onboard_medical_officer</span>
+          </div>
+          <div id="provenance-badges"></div>
+        </div>
+      </div>
+
+      <!-- CHART CARD + BRSMPT ARES COGNITIVE BATTERY BREAKDOWN -->
+      <div class="glass-card">
+        <div class="card-title-bar">
+          <span class="card-title">Longitudinal Telemetry vs. Personal Baseline Band</span>
+          <span class="card-tag" id="chart-badge">exercise_performance_index</span>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <span class="metric-pill active" id="pill-exercise_performance_index" onclick="changeMetric('exercise_performance_index')">Muscle Index (OSD-684)</span>
+          <span class="metric-pill" id="pill-sustained_attention_task" onclick="changeMetric('sustained_attention_task')">Ares Vigilance (OSD-939)</span>
+          <span class="metric-pill" id="pill-sleep_duration" onclick="changeMetric('sleep_duration')">Sleep Hours</span>
+          <span class="metric-pill" id="pill-fatigue_self_report" onclick="changeMetric('fatigue_self_report')">Fatigue (1-5)</span>
+          <span class="metric-pill" id="pill-heart_rate_resting" onclick="changeMetric('heart_rate_resting')">Resting HR</span>
+          <span class="metric-pill" id="pill-glucose" onclick="changeMetric('glucose')">Blood Glucose</span>
+          <span class="metric-pill" id="pill-radiation_dose" onclick="changeMetric('radiation_dose')">Radiation (OSD-1010)</span>
+          <span class="metric-pill" id="pill-co2" onclick="changeMetric('co2')">Cabin CO2 (OSD-816)</span>
+        </div>
+
+        <div id="chart-stage" style="background:rgba(4, 8, 18, 0.9);border:1px solid rgba(148, 163, 184, 0.14);border-radius:10px;padding:12px;"></div>
+
+        <!-- LIVE BRSMPT CAMPAIGN 1 ARES SUB-TEST BREAKDOWN -->
+        <div class="ares-grid">
+          <div class="ares-cell">
+            <div class="ares-name">Simple Reaction (SRT)</div>
+            <div class="ares-val" id="ares-srt">258.4 ms</div>
+            <div class="ares-bar-bg"><div class="ares-bar-fill" style="width:88%;"></div></div>
+          </div>
+          <div class="ares-cell">
+            <div class="ares-name">Running Memory</div>
+            <div class="ares-val" id="ares-mem">93.2 %</div>
+            <div class="ares-bar-bg"><div class="ares-bar-fill" style="width:93%;"></div></div>
+          </div>
+          <div class="ares-cell">
+            <div class="ares-name">Matching To Sample</div>
+            <div class="ares-val" id="ares-mts">94.8 %</div>
+            <div class="ares-bar-bg"><div class="ares-bar-fill" style="width:95%;"></div></div>
+          </div>
+          <div class="ares-cell">
+            <div class="ares-name">Ares mRTC Score</div>
+            <div class="ares-val" id="ares-mrtc">91.5 pts</div>
+            <div class="ares-bar-bg"><div class="ares-bar-fill" style="width:91%;"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- COLUMN 3: NASA OSDR REGISTRY & CREW ADHERENCE -->
+    <div class="col-intel">
+      <div class="glass-card">
+        <div class="card-title-bar">
+          <span class="card-title">NASA OSDR & Ares Provenance</span>
+          <span class="card-tag">SECTION 12.1</span>
+        </div>
+
+        <div class="osdr-card">
+          <div class="osdr-head">OSD-1010 (Corrected from OSD-1018)</div>
+          <div class="osdr-body">Human gut-on-chip heavy-ion irradiation RNA-seq. Grounds <code>PB-RAD</code> & <code>PB-GI-IMMUNE</code>. In-vitro mechanism context only.</div>
+        </div>
+
+        <div class="osdr-card">
+          <div class="osdr-head">OSD-684 // Skeletal Muscle CubeLab</div>
+          <div class="osdr-body">Human myobundle tissue-chip RNA-seq fiber & metabolic shifts. Grounds <code>PB-MSK</code> & <code>PB-MET</code>.</div>
+        </div>
+
+        <div class="osdr-card">
+          <div class="osdr-head">OSD-816 // Translaminar SANS Model</div>
+          <div class="osdr-body">Ex vivo human ocular ICP:IOP & optic nerve model. Grounds <code>PB-SANS</code> visual symptom pathway.</div>
+        </div>
+
+        <div class="osdr-card">
+          <div class="osdr-head">OSD-939 + BRSMPT Campaign 1 Ares</div>
+          <div class="osdr-body">Proton rPVT & Ares Crew Subjects 1-3 SRT, Running Memory & mRTC tasks -> <code>sustained_attention_task</code>.</div>
+        </div>
+      </div>
+
+      <div class="glass-card">
+        <div class="card-title-bar">
+          <span class="card-title">Crew Adherence & Daily Check-In</span>
+          <span class="card-tag">ETHICAL GAMIFICATION</span>
+        </div>
+
+        <div class="streak-banner">
+          <div class="streak-circle" id="streak-val">7d</div>
+          <div style="padding-top:3px;">
+            <div style="font-weight:800;font-size:0.88rem;color:#f8fafc;">Adherence Streak Active</div>
+            <div style="font-size:0.73rem;color:#94a3b8;">ARED Resistance Plan: 96% | Symptom reporting is neutral & never penalized.</div>
+          </div>
+        </div>
+
+        <label style="font-size:0.72rem;color:#94a3b8;text-transform:uppercase;font-weight:700;">Voluntary Fatigue Self-Report (1-5)</label>
+        <select class="select-lux">
+          <option>1 — Nominal / Fully Rested</option>
+          <option>2 — Mildly Tired</option>
+          <option>3 — Moderate Workload Fatigue</option>
+          <option>4 — High Fatigue (Open PB-BEH-SLEEP)</option>
+        </select>
+
+        <label style="font-size:0.72rem;color:#94a3b8;text-transform:uppercase;font-weight:700;">Symptom Pathway Check-In</label>
+        <select class="select-lux">
+          <option>No New Symptoms</option>
+          <option>GI Discomfort (OSD-1010 -> PB-GI-IMMUNE)</option>
+          <option>Visual Focus Shift (OSD-816 -> PB-SANS)</option>
+          <option>Mild Headache (Cross-check Cabin CO2)</option>
+        </select>
+
+        <button class="btn-lux" onclick="addStreak()">Submit Onboard Check-In (+1 Streak)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FLOATING GLASS JUDGE SIMULATOR DOCK -->
+  <div class="judge-dock">
+    <div class="dock-title">⚡ JUDGE LIVE ENGINE PANEL:</div>
+    <button class="dock-btn dock-nom" onclick="triggerScenario('normal')">Nominal (Seed 42)</button>
+    <button class="dock-btn dock-ora" onclick="triggerScenario('scenario_a')">Scenario A: Muscle/Metabolic Drift [Seed 4101 -> ORANGE]</button>
+    <button class="dock-btn dock-red" onclick="triggerScenario('scenario_b')">Scenario B: Radiation + Vigilance [Seed 939 -> RED]</button>
+    <button class="dock-btn dock-red" onclick="triggerScenario('scenario_c')">Scenario C: Cabin CO2 + SANS Offline [Seed 816 -> RED]</button>
+    <button class="dock-btn dock-gry" onclick="triggerScenario('normal', 'visual_change', false, false)">Kill Visual Sensor (GRAY)</button>
+    <button class="dock-btn dock-gry" onclick="triggerScenario('normal', '', false, true)">Inject 'source_unit_required' (GRAY)</button>
+    <button class="dock-btn" id="dock-comms-btn" onclick="toggleComms()">Cut Earth Link (Test Offline)</button>
+  </div>
+
+  <script>
+    let appData = null;
+    let currentMetric = 'exercise_performance_index';
+    let currentRegion = 'limbs';
+    let streak = 7;
+    let metSeconds = 51879;
+
+    const SUBSYSTEMS = {
+      head: { title: 'NEURO-OCULAR (SANS) & VIGILANCE', desc: 'Grounded in NASA OSD-816 (ex vivo ICP:IOP) & OSD-939 + BRSMPT Ares cognitive battery. Routes to PB-SANS & PB-BEH-SLEEP.' },
+      chest: { title: 'CARDIOVASCULAR & THORAX', desc: 'Monitors resting/exercise HR, HRV, and SpO2 trends against frozen preflight and rate-limited in-flight baselines.' },
+      abdomen: { title: 'GI EPITHELIAL, IMMUNE & METABOLIC', desc: 'Grounded in NASA OSD-1010 (fixes OSD-1018, human gut-on-chip heavy-ion RNA-seq) & OSD-684. Routes to PB-GI-IMMUNE & PB-MET.' },
+      limbs: { title: 'SKELETAL MUSCLE & BONE MYOBUNDLE', desc: 'Grounded in NASA OSD-684 (autonomous CubeLab myobundle RNA-seq). Tracks exercise performance index & adherence via PB-MSK.' },
+      cabin: { title: 'HABITAT ENVIRONMENT & RADIATION SHIELD', desc: 'Monitors dosimeter dose-rate and cabin ppCO2. Distinguishes confirmed vehicle hazard from sensor fault via PB-RAD & PB-ENV.' }
+    };
+
+    setInterval(() => {
+      metSeconds++;
+      const hrs = String(Math.floor(metSeconds / 3600) % 24).padStart(2, '0');
+      const mins = String(Math.floor((metSeconds % 3600) / 60)).padStart(2, '0');
+      const secs = String(metSeconds % 60).padStart(2, '0');
+      document.getElementById('live-clock').textContent = `MET 086:${hrs}:${mins}:${secs}`;
+    }, 1000);
+
+    async function fetchState() {
+      const res = await fetch('/api/state');
+      appData = await res.json();
+      renderConsole();
+    }
+
+    async function switchSubject(subjId) {
+      ['Subject_1', 'Subject_2', 'Subject_3'].forEach(s => {
+        document.getElementById('tab-' + s).className = (s === subjId) ? 'crew-tab active' : 'crew-tab';
+      });
+      const res = await fetch('/api/subject/' + subjId, { method: 'POST' });
+      appData = await res.json();
+      renderConsole();
+    }
+
+    async function triggerScenario(name, missing = '', noisy = false, unmapped = false) {
+      const q = new URLSearchParams({ missing_sensor: missing, noisy: String(noisy), unmapped_unit: String(unmapped) }).toString();
+      const res = await fetch('/api/scenario/' + name + '?' + q, { method: 'POST' });
+      appData = await res.json();
+      if (name === 'scenario_a') { selectRegion('limbs', 'exercise_performance_index'); }
+      else if (name === 'scenario_b') { selectRegion('head', 'sustained_attention_task'); }
+      else if (name === 'scenario_c') { selectRegion('cabin', 'co2'); }
+      else { renderConsole(); }
+    }
+
+    async function toggleComms() {
+      if (!appData) return;
+      const mode = appData.online ? 'offline' : 'online';
+      await fetch('/api/comms/' + mode, { method: 'POST' });
+      await fetchState();
+    }
+
+    function selectRegion(region, metric) {
+      currentRegion = region;
+      changeMetric(metric);
+    }
+
+    function changeMetric(metric) {
+      currentMetric = metric;
+      document.querySelectorAll('.kpi-box').forEach(el => el.classList.remove('selected'));
+      const activeCard = document.getElementById('card-' + metric);
+      if (activeCard) activeCard.classList.add('selected');
+
+      document.querySelectorAll('.metric-pill').forEach(el => el.classList.remove('active'));
+      const activePill = document.getElementById('pill-' + metric);
+      if (activePill) activePill.classList.add('active');
+
+      renderConsole();
+    }
+
+    function addStreak() {
+      streak++;
+      document.getElementById('streak-val').textContent = streak + 'd';
+    }
+
+    function getLatest(metric, defVal) {
+      if (!appData || !appData.observations) return defVal;
+      const valid = appData.observations.filter(o => o.metric === metric && o.quality === 'good');
+      return valid.length ? valid[valid.length - 1].value : 'QUAR';
+    }
+
+    function renderSVGChart(obsList) {
+      const stage = document.getElementById('chart-stage');
+      document.getElementById('chart-badge').textContent = currentMetric + ' // ILLUSTRATIVE DEMO VALUE';
+
+      if (!obsList || obsList.length === 0) {
+        stage.innerHTML = '<div style="padding:42px;text-align:center;color:#94a3b8;font-family:monospace;">[ ◌ STREAM QUARANTINED OR SENSOR OFFLINE -> SYSTEM STATE: GRAY ]</div>';
+        return;
+      }
+
+      const vals = obsList.map(o => o.value);
+      const base = vals[0];
+      const minV = Math.min(...vals, base * 0.92) - 1.5;
+      const maxV = Math.max(...vals, base * 1.08) + 1.5;
+      const w = 580, h = 195, padX = 42, padY = 34;
+
+      const xOf = (i) => padX + (i * (w - padX * 2)) / Math.max(vals.length - 1, 1);
+      const yOf = (v) => h - padY - ((v - minV) / Math.max(maxV - minV, 0.01)) * (h - padY * 2);
+
+      const pts = vals.map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
+      const area = `${xOf(0).toFixed(1)},${h - padY} ${pts} ${xOf(vals.length - 1).toFixed(1)},${h - padY}`;
+      const baseY = yOf(base).toFixed(1);
+      const bandTop = yOf(base * 1.03).toFixed(1);
+      const bandBot = yOf(base * 0.97).toFixed(1);
+      const bandH = Math.max(Math.abs(bandBot - bandTop), 16);
+
+      let dots = '';
+      vals.forEach((v, i) => {
+        const cx = xOf(i).toFixed(1), cy = yOf(v).toFixed(1);
+        dots += `
+          <circle cx="${cx}" cy="${cy}" r="4.8" fill="#030712" stroke="#38bdf8" stroke-width="2.5" />
+          <text x="${cx}" y="${cy - 11}" fill="#f8fafc" font-size="10" font-family="monospace" text-anchor="middle">${v}</text>
+          <text x="${cx}" y="${h - 8}" fill="#64748b" font-size="9.5" font-family="monospace" text-anchor="middle">SOL-${i + 1}</text>
+        `;
+      });
+
+      stage.innerHTML = `
+        <svg width="100%" height="195" viewBox="0 0 ${w} ${h}">
+          <defs>
+            <linearGradient id="luxArea" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.38" />
+              <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0.0" />
+            </linearGradient>
+          </defs>
+          <rect x="${padX}" y="${Math.min(bandTop, bandBot)}" width="${w - padX * 2}" height="${bandH}" fill="rgba(16, 185, 129, 0.1)" />
+          <line x1="${padX}" y1="${baseY}" x2="${w - padX}" y2="${baseY}" stroke="#10b981" stroke-width="1.3" stroke-dasharray="6,4" />
+          <text x="${padX + 6}" y="16" fill="#34d399" font-size="9.5" font-family="monospace" text-anchor="start">● APPROVED PERSONAL BASELINE BAND (REF: ${base})</text>
+
+          <polygon points="${area}" fill="url(#luxArea)" />
+          <polyline fill="none" stroke="#38bdf8" stroke-width="3" points="${pts}" />
+          ${dots}
+        </svg>
+      `;
+    }
+
+    function renderConsole() {
+      if (!appData) return;
+      const evt = appData.active_event;
+      const pb = appData.playbook;
+      const prof = appData.ares_profile;
+
+      const linkChip = document.getElementById('link-chip');
+      linkChip.textContent = appData.online ? '● EARTH LINK: SYNCHRONIZED' : '▲ EARTH LINK: OFFLINE (AUTONOMOUS)';
+      linkChip.className = 'status-chip ' + (appData.online ? 'chip-online' : 'chip-offline');
+
+      document.getElementById('outbox-chip').textContent = `OUTBOX QUEUE: ${appData.outbox_count} | DELIVERED: ${appData.delivered_count}`;
+      document.getElementById('dock-comms-btn').textContent = appData.online ? 'Cut Earth Link (Test Offline)' : 'Restore Earth Link (Flush Outbox)';
+
+      // KPI Values & Dynamic Crew Baselines
+      document.getElementById('v-hr').textContent = getLatest('heart_rate_resting', prof.hr_base);
+      document.getElementById('b-hr').textContent = prof.hr_base + ' bpm';
+      document.getElementById('v-ex').textContent = getLatest('exercise_performance_index', prof.ex_base);
+      document.getElementById('b-ex').textContent = prof.ex_base + ' %';
+      document.getElementById('v-att').textContent = getLatest('sustained_attention_task', prof.composite_score);
+      document.getElementById('b-att').textContent = `${appData.ares_subject} (${prof.composite_score})`;
+      document.getElementById('v-slp').textContent = getLatest('sleep_duration', prof.slp_base);
+      document.getElementById('b-slp').textContent = prof.slp_base + ' hrs';
+      document.getElementById('v-rad').textContent = getLatest('radiation_dose', 0.45);
+      document.getElementById('v-co2').textContent = getLatest('co2', 2.80);
+
+      // Update BRSMPT Ares Sub-Test Breakdown Bars
+      document.getElementById('ares-srt').textContent = prof.srt_ms + ' ms';
+      document.getElementById('ares-mem').textContent = prof.running_memory_pct + ' %';
+      document.getElementById('ares-mts').textContent = prof.matching_to_sample_pct + ' %';
+      document.getElementById('ares-mrtc').textContent = prof.mrtc_score + ' pts';
+
+      // Decision Engine Hero
+      const hero = document.getElementById('hero-banner');
+      hero.className = 'engine-hero hero-' + evt.state;
+      document.getElementById('hero-state').textContent = `◈ STATE: ${evt.state} // ${prof.crew_name} // SEED ${appData.seed}`;
+      document.getElementById('hero-sync').textContent = `TX: ${evt.tx_status.toUpperCase()} | DELIVERY: ${evt.delivery_status.toUpperCase()} | ACK: ${evt.ack_status.toUpperCase()}`;
+
+      document.getElementById('exp-next').textContent = evt.explanation.next_action;
+      document.getElementById('exp-what').textContent = evt.explanation.what_changed;
+      document.getElementById('exp-why').textContent = evt.explanation.why_it_matters;
+
+      if (pb) {
+        document.getElementById('pb-head').textContent = `${pb.id} v${pb.version} [${pb.approval_status}]`;
+        document.getElementById('pb-act').textContent = pb.initial_action;
+        document.getElementById('pb-esc').textContent = pb.escalation_condition;
+        document.getElementById('pb-auth').textContent = pb.responsible_authority;
+      }
+
+      const stBadges = (evt.osdr_studies_cited || []).map(s => `<span class="badge-mini">NASA ${s}</span>`).join('');
+      const rlBadges = (evt.rules_triggered || ['NOMINAL_BASELINE']).map(r => `<span class="badge-mini">${r}</span>`).join('');
+      document.getElementById('provenance-badges').innerHTML = `${stBadges}${rlBadges}<span class="badge-mini">ARES: ${appData.ares_subject}</span><span class="badge-mini">MAP: ${evt.data_quality.mapping_status}</span>`;
+
+      const setOrganColor = (id, col) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (id === 'holo-cabin') el.setAttribute('stroke', col);
+        else { el.setAttribute('fill', col); el.setAttribute('stroke', col); }
+      };
+
+      const baseCol = evt.state === 'GRAY' ? '#94a3b8' : '#10b981';
+      ['holo-cabin', 'holo-head', 'holo-chest', 'holo-abdomen', 'holo-limbs'].forEach(id => setOrganColor(id, baseCol));
+
+      if (evt.state === 'ORANGE') {
+        setOrganColor('holo-limbs', '#f97316');
+        setOrganColor('holo-abdomen', '#f97316');
+        setOrganColor('holo-chest', '#f59e0b');
+      } else if (evt.state === 'RED') {
+        setOrganColor('holo-cabin', '#ef4444');
+        setOrganColor('holo-head', '#ef4444');
+        setOrganColor('holo-abdomen', '#ef4444');
+      }
+
+      const sub = SUBSYSTEMS[currentRegion];
+      document.getElementById('sub-title').textContent = `ACTIVE SUBSYSTEM: ${sub.title}`;
+      document.getElementById('sub-desc').innerHTML = sub.desc;
+
+      const filtered = (appData.observations || []).filter(o => o.metric === currentMetric && o.quality === 'good');
+      renderSVGChart(filtered);
+    }
+
+    fetchState();
+  </script>
+</body>
+</html>
+"""
+}
+
+for filepath, content in files.items():
+    p = Path(filepath)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+
+print("P2 & P3 Live Ares Subject Switcher and Chart Upgrade applied!")

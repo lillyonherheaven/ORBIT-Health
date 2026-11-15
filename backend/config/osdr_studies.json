@@ -1,0 +1,59 @@
+{
+  "OSD-1010": {
+    "study_id": "OSD-1010",
+    "id_note": "ID correction from supplied OSD-1018",
+    "title": "Lacticaseibacillus rhamnosus GG modulates epithelial responses to space-relevant heavy-ion irradiation in a human gut-on-chip",
+    "url": "https://osdr.nasa.gov/bio/repo/data/studies/OSD-1010",
+    "organism_model": "human_gut_on_chip",
+    "assay": "RNA-seq transcriptomics",
+    "risk_domains": ["radiation", "gi_immune", "metabolic"],
+    "body_map_regions": ["abdomen", "cabin"],
+    "playbooks": ["PB-RAD", "PB-GI-IMMUNE", "PB-MET"],
+    "evidence_limitation": "In-vitro gut-on-chip model; supports mechanism context only. Does not validate personal risk prediction, clinical thresholds, or probiotic intervention."
+  },
+  "OSD-684": {
+    "study_id": "OSD-684",
+    "title": "Human skeletal muscle tissue chip autonomous payload reveals changes in fiber type and metabolic gene expression due to spaceflight",
+    "url": "https://osdr.nasa.gov/bio/repo/data/studies/OSD-684",
+    "organism_model": "human_myobundle_tissue_chip",
+    "assay": "RNA-seq transcriptomics",
+    "risk_domains": ["bone_muscle", "metabolic"],
+    "body_map_regions": ["limbs", "abdomen"],
+    "playbooks": ["PB-MSK", "PB-MET", "PB-RECOVERY"],
+    "evidence_limitation": "Human myobundle tissue-chip; not a wearable feed, muscle strength measurement, bone-density measurement, or clinical predictor."
+  },
+  "OSD-816": {
+    "study_id": "OSD-816",
+    "title": "The ex vivo human translaminar autonomous system to study spaceflight associated neuro-ocular syndrome pathogenesis",
+    "url": "https://osdr.nasa.gov/bio/repo/data/studies/OSD-816",
+    "organism_model": "ex_vivo_human_translaminar_ocular_model",
+    "assay": "ICP:IOP translaminar pressure & electrophysiology",
+    "risk_domains": ["sans_visual"],
+    "body_map_regions": ["head"],
+    "playbooks": ["PB-SANS"],
+    "evidence_limitation": "Ex vivo human ocular model; no consumer wearable ICP:IOP inference, diagnosis, or invented pressure threshold."
+  },
+  "OSD-939": {
+    "study_id": "OSD-939",
+    "associated_records": ["OSD-896", "OSD-897"],
+    "title": "Deficits in Sustained Attention and Changes in Dopaminergic Protein Levels following Exposure to Proton Radiation",
+    "url": "https://osdr.nasa.gov/bio/repo/data/studies/OSD-939",
+    "organism_model": "rodent_rPVT_behavioral_and_brain_protein",
+    "assay": "Rodent psychomotor vigilance task (rPVT) & dopaminergic protein assay",
+    "risk_domains": ["radiation", "behavioral_sleep"],
+    "body_map_regions": ["head", "cabin"],
+    "playbooks": ["PB-RAD", "PB-BEH-SLEEP"],
+    "evidence_limitation": "Animal, strain-specific evidence; motivates cautious vigilance monitoring hypothesis only. Never establishes human dose-response or fitness-for-duty."
+  },
+  "BRSMPT-ARES-C1": {
+    "study_id": "BRSMPT_Campaign_1_Ares",
+    "title": "BRSMPT Campaign 1 Ares Analog Behavioral & Cognitive Task Battery (Subjects 1, 2, 3)",
+    "url": "local://BRSMPT_Campaign_1_Ares",
+    "organism_model": "human_analog_crew_subjects_1_to_3",
+    "assay": "Simple Reaction Time, Running Memory, Matching to Sample, mRTC, Obsv_All",
+    "risk_domains": ["behavioral_sleep"],
+    "body_map_regions": ["head"],
+    "playbooks": ["PB-BEH-SLEEP"],
+    "evidence_limitation": "Analog campaign cognitive task battery; vigilance change alone never triggers RED and never diagnoses psychiatric conditions."
+  }
+}
