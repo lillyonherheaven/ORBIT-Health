@@ -27,13 +27,13 @@
 
 ---
 
-> **🎯 Challenge:** *Create Health Monitoring Software for Astronauts on Space Missions* — NASA Space Apps Challenge 2026
+> ** Challenge:** *Create Health Monitoring Software for Astronauts on Space Missions* — NASA Space Apps Challenge 2026
 
-> ⚠️ **ORBIT Health supports medical decision-making. It does not diagnose conditions, prescribe treatment, or replace medical professionals.**
+>  **ORBIT Health supports medical decision-making. It does not diagnose conditions, prescribe treatment, or replace medical professionals.**
 
 ---
 
-## 📑 Table of Contents
+##  Table of Contents
 
 - [Overview](#-overview)
 - [The Problem](#-the-problem)
@@ -56,7 +56,7 @@
 
 ---
 
-## ✨ Overview
+##  Overview
 
 **ORBIT Health** is an **offline-first** health monitoring and decision-support prototype that helps astronauts understand health-related observations and make informed onboard decisions during long-duration and deep-space missions — especially when communication with Earth is delayed or unavailable.
 
@@ -64,26 +64,26 @@ It brings crew check-ins, physiological observations, exercise and performance r
 
 | | |
 |---|---|
-| 🌍 **Earth-independent** | Core assessment and guidance run locally, with no live link required |
-| 🧠 **Explainable** | Every alert says *what changed*, *why it matters*, and *what to do next* |
-| 👤 **Personal** | Each astronaut is compared to their own normal, not a population average |
-| 🛡️ **Safety-first** | Missing or unreliable data is never silently treated as healthy |
+|  **Earth-independent** | Core assessment and guidance run locally, with no live link required |
+|  **Explainable** | Every alert says *what changed*, *why it matters*, and *what to do next* |
+|  **Personal** | Each astronaut is compared to their own normal, not a population average |
+|  **Safety-first** | Missing or unreliable data is never silently treated as healthy |
 
 ---
 
-## 🚨 The Problem
+##  The Problem
 
 | Challenge | Why it matters |
 |---|---|
-| 📡 **Comm delays & outages** | Deep-space latency or loss of contact removes real-time support from Earth |
-| 🧩 **Scattered data** | Wearables, cabin sensors, exercise logs, and manual check-ins live in separate places — no single view |
-| 🐢 **Slow-developing risks** | Radiation exposure, bone/muscle loss, sleep disruption, fluid shift, and SANS develop gradually and are easy to miss |
+|  **Comm delays & outages** | Deep-space latency or loss of contact removes real-time support from Earth |
+|  **Scattered data** | Wearables, cabin sensors, exercise logs, and manual check-ins live in separate places — no single view |
+| **Slow-developing risks** | Radiation exposure, bone/muscle loss, sleep disruption, fluid shift, and SANS develop gradually and are easy to miss |
 
 > Without a unified onboard view, meaningful changes are hard to recognize and interpret quickly. **Astronauts need trustworthy decision support on board.**
 
 ---
 
-## 💡 Our Solution
+##  Our Solution
 
 ORBIT Health runs a continuous five-stage loop:
 
@@ -104,29 +104,29 @@ flowchart LR
 
 ---
 
-## 🧭 Key Features
+##  Key Features
 
-### 🖥️ Unified Crew Dashboard
+###  Unified Crew Dashboard
 Crew status, health indicators, mission context, alerts, and communication status in a single view.
 
-### 🧍 Interactive 2D Body Map
+###  Interactive 2D Body Map
 A **navigation aid**: select a region to see related monitoring domains, indicators, trends, active alerts, and linked guidance. *It does not diagnose or localize disease.*
 
-### 🔍 Explainable Risk Assessment
+###  Explainable Risk Assessment
 Combines data-quality checks, personal-baseline comparison, trend and persistence analysis, critical safety overrides, and evidence-based explanations — always showing data quality and uncertainty.
 
-### 📴 Offline-First Operation
+###  Offline-First Operation
 Monitoring, assessment, records, and guidance keep working during outages. A durable **store-and-forward queue** preserves outbound records for later synchronization.
 
-### 🎛️ Judge Control Panel
+### Judge Control Panel
 Trigger scenarios, interrupt communications, inject sensor faults, and inspect system responses live.
 
-### 🤝 Adherence-Focused Engagement
+###  Adherence-Focused Engagement
 Recognizes check-ins and completion of approved exercise. **Symptom reporting is never scored or penalized**, and there are no competitive health leaderboards.
 
 ---
 
-## ⚙️ How It Works
+##  How It Works
 
 ```mermaid
 flowchart TD
