@@ -366,34 +366,21 @@ orbit-health/
 - [ ] Expanded evaluation across longer simulated missions
 - [ ] 🌍 **Earth benefit:** adapt for remote, low-connectivity healthcare
 
----
-
-## 🔗 Project Links
-
-| | |
-|---|---|
-| 🌐 **Live demo** | `[Add public demo URL]` |
-| 🎥 **Demo video** | `[Add public demo URL]` |
-| 📦 **Repository** | `[Add public repository URL]` |
-| 🖼️ **Presentation** | `[Add slides URL]` |
-
----
-
-## 👥 Team
+## Team
 
 **`[Add team name]`** — NASA Space Apps Challenge 2026
 
 | Name | Role | Links |
 |---|---|---|
-| `[Name]` | `[Role]` | `[GitHub / LinkedIn]` |
-| `[Name]` | `[Role]` | `[GitHub / LinkedIn]` |
-| `[Name]` | `[Role]` | `[GitHub / LinkedIn]` |
-| `[Name]` | `[Role]` | `[GitHub / LinkedIn]` |
-| `[Name]` | `[Role]` | `[GitHub / LinkedIn]` |
+| `Jana Mahmoud` | `Team Leader | Researcher | Frontend Developer` |
+| `Malak Osama` | `Backend Developer`|
+| `Hana Khaled` | `Backend Developer` |
+| `Mariam Mahmoud` | `Data Analysis` |
+| `Ganna Radwan` | `Presentation Designer & Content Coordinator` | 
 
 ---
 
-## 🙏 Acknowledgements
+##  Acknowledgements
 
 We acknowledge **NASA's Open Science Data Repository** and the researchers whose published studies provide scientific context for this prototype. The cited studies are used within their stated research scope and limitations.
 
@@ -401,7 +388,7 @@ We acknowledge **NASA's Open Science Data Repository** and the researchers whose
 
 <div align="center">
 
-**🚀 Built for a future where space exploration goes farther — and astronaut health remains a priority.**
+** Built for a future where space exploration goes farther — and astronaut health remains a priority.**
 
 *Not a doctor. A trustworthy teammate.*
 
